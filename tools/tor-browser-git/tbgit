@@ -1,0 +1,298 @@
+#!/usr/bin/perl -w
+use strict;
+
+use FindBin;
+use Getopt::Long;
+use IO::CaptureOutput qw(capture_exec);
+use File::Slurp qw(read_file);
+use File::Basename;
+use File::Find;
+use Cwd qw(getcwd);
+
+my $docdir = "$FindBin::Bin/doc";
+
+my %options;
+my %actions = (
+    tbgit => {
+        cmd => sub {},
+        options => [],
+    },
+    help => {
+        cmd => \&cmd_help,
+        options => [],
+    },
+    merge => {
+        cmd =>\&cmd_merge,
+        options => [ 'list', 'yes', 'no-edit', ],
+    },
+    pull => {
+        cmd => \&cmd_pull,
+        options => [ 'list', 'yes', 'no-fetch', ],
+    },
+    push => {
+        cmd => \&cmd_push,
+        options => [ 'list', 'yes', 'no-fetch', ],
+    },
+    'try-results' => {
+        cmd => \&cmd_tryresults,
+        options => [],
+    },
+    'try-push' => {
+        cmd => \&cmd_trypush,
+        options => [ 'list', 'yes', ],
+    },
+);
+
+sub exit_error {
+    print STDERR "Error: ", $_[0], "\n";
+    exit (exists $_[1] ? $_[1] : 1);
+}
+
+sub ask_yn {
+    my ($msg, $default) = @_;
+    my $yn = $default ? $default eq 'y' ? '[Y/n]' : '[y/N]' : '[y/n]';
+    print "$msg $yn\n";
+    while (my $z = <STDIN>) {
+        chomp $z;
+        if ($z eq '' && $default) {
+            $z = $default;
+        }
+        if ($z eq 'y' || $z eq 'Y') {
+            return 1;
+        }
+        if ($z eq 'n' || $z eq 'N') {
+            return undef;
+        }
+        print "$msg $yn\n";
+    }
+    return undef;
+}
+
+sub cmd_help {
+    my ($cmd) = @_;
+    $cmd = 'help' if @_ > 1;
+    $cmd = 'tbgit' if @_ == 0;
+    exit_error("Unknown commmand $cmd") unless $actions{$cmd};
+    print read_file "$docdir/$cmd.txt";
+    exit 0;
+}
+
+sub run_noerr {
+    my @cmd = @_;
+    if ($options{'dry-run'}) {
+        print "dry-run: ", join(' ', @cmd);
+        return;
+    }
+    exit_error('Failed to run: ' . join(' ', @cmd)) unless system(@cmd) == 0;
+}
+
+sub run_noerr_ask {
+    if (!$options{yes}) {
+        return unless ask_yn("Run '" . join(' ', @_) . '\'?', 'n');
+    }
+    run_noerr(@_);
+}
+
+sub git_dir {
+    for (my $dir = getcwd; $dir ne '/'; $dir = dirname($dir)) {
+        return "$dir/.git" if -d "$dir/.git";
+    }
+    exit_error("Not in a git repository");
+}
+
+sub git_current_branch {
+    my $d = read_file(git_dir . '/HEAD');
+    exit_error "Cannot read HEAD" unless $d;
+    return $d =~ m/ref: refs\/heads\/(.+)$/ ? $1 : undef;
+}
+
+sub get_versions {
+    my $branch = git_current_branch;
+    if ($branch && $branch =~ m/^tor-browser-([^-]+)-([^-]+)-.+/) {
+        return ($1, $2);
+    }
+    exit_error "Cannot parse versions in current branch: $branch";
+}
+
+sub git_hash {
+    my ($branch) = @_;
+    my ($out, $err, $success) = capture_exec('git', 'show', '-s',
+                                        '--format=%H', "$branch^{commit}");
+    chomp $out;
+    return $out;
+}
+
+sub git_is_ancestor {
+    my ($c1, $c2) = @_;
+    my ($out, $err, $success) = capture_exec('git', 'merge-base',
+                                             '--is-ancestor', $c1, $c2);
+    return $success;
+}
+
+sub git_notes_get {
+    my ($ref, $object) = @_;
+    my ($out, $err, $success) = capture_exec('git', 'notes', '--ref',
+                                             $ref, 'show', $object);
+    return undef unless $success;
+    chomp $out;
+    return $out;
+}
+
+sub git_fetch {
+    my ($repo) = @_;
+    return if $options{'no-fetch'};
+    my ($out, $err, $success) = capture_exec('git', 'fetch', $repo);
+    exit_error "Error fetching $repo:\n$err" unless $success;
+}
+
+sub branch_exists {
+    -f git_dir . '/refs/heads/' . $_[0];
+}
+
+sub branches_list {
+    my ($refdir, $ffver, $tbver) = @_;
+    my $hdir = git_dir . "/refs/$refdir";
+    my @branches;
+    my $wanted = sub {
+        return unless -f $File::Find::name;
+        my $branch = $File::Find::name;
+        $branch =~ s/^$hdir\///;
+        push @branches, $branch;
+    };
+    find($wanted, $hdir);
+    return sort @branches unless $ffver;
+    my %b;
+    foreach my $branch (@branches) {
+        $b{$1} = $branch if ($branch =~ m/^$ffver\/([^\/]+)$/);
+    }
+    return sort values %b unless $tbver;
+    foreach my $branch (@branches) {
+        $b{$1} = $branch if ($branch =~ m/^$ffver\/$tbver\/([^\/]+)$/);
+    }
+    return sort values %b;
+}
+
+sub cmd_merge {
+    cmd_help('merge') unless @_ == 0;
+    my ($ffver, $tbver) = get_versions;
+    my @branches = branches_list('heads', $ffver, $tbver);
+    foreach my $branch (@branches) {
+        next if git_is_ancestor($branch, 'HEAD');
+        if ($options{list}) {
+            print "$branch\n";
+            next;
+        }
+        run_noerr_ask('git', 'merge',
+                      $options{'no-edit'} ? ('--no-edit') : (), $branch);
+    }
+}
+
+sub cmd_pull {
+    cmd_help('pull') unless @_ == 1;
+    my ($remote) = @_;
+    my ($ffver, $tbver) = get_versions;
+    git_fetch($remote);
+    my @local_branches = branches_list("heads", $ffver, $tbver);
+    my @remote_branches = branches_list("remotes/$remote", $ffver, $tbver);
+    my %l = map { $_ => 1 } @local_branches;
+    my %r = map { $_ => 1 } @remote_branches;
+    foreach my $branch (@remote_branches) {
+        if (!$l{$branch}) {
+            print "$branch (new)\n";
+        } elsif (!git_is_ancestor("$remote/$branch", $branch)) {
+            if (git_is_ancestor($branch, "$remote/$branch")) {
+                if ($options{list}) {
+                    print "$branch (pull)\n";
+                    next;
+                }
+                run_noerr_ask('git', 'update-ref', $branch, "$remote/$branch");
+            } else {
+                if ($options{list}) {
+                    print "$branch (non-ff pull)\n";
+                    next;
+                }
+                print "Warning: non fast-forward pull. You may lose some commits.\n";
+                run_noerr_ask('git', 'update-ref', $branch, "$remote/$branch");
+            }
+        }
+    }
+    foreach my $branch (@local_branches) {
+        if (!$r{$branch}) {
+            if ($options{list}) {
+                print "$branch (remove)\n";
+                next;
+            }
+            print "Warning: removing branch $branch\n";
+            run_noerr_ask('git', 'branch', '-D', $branch);
+        }
+    }
+}
+
+sub cmd_push {
+    cmd_help('push') unless @_ == 1;
+    my ($remote) = @_;
+    my ($ffver, $tbver) = get_versions;
+    git_fetch($remote);
+    my @local_branches = branches_list("heads", $ffver, $tbver);
+    my @remote_branches = branches_list("remotes/$remote", $ffver, $tbver);
+    my %l = map { $_ => 1 } @local_branches;
+    my %r = map { $_ => 1 } @remote_branches;
+    foreach my $branch (@remote_branches) {
+        next unless $l{$branch};
+        next if git_hash($branch) eq git_hash("$remote/$branch");
+        if (git_is_ancestor("$remote/$branch", $branch)) {
+            print "$branch (push)\n";
+            next if $options{list};
+            run_noerr_ask('git', 'push', $remote, "$branch:$branch");
+        } else {
+            print "$branch (non-ff push)\n";
+            next if $options{list};
+            print "Warning: non fast-forward push required on $branch\n";
+        }
+    }
+    foreach my $branch (@local_branches) {
+        next if $r{$branch};
+        print "$branch (new)\n";
+        next if $options{list};
+        run_noerr_ask('git', 'push', $remote, "$branch:$branch");
+    }
+}
+
+sub cmd_tryresults {
+    cmd_help('try-results') unless @_ == 0;
+    my ($ffver, $tbver) = get_versions;
+    my @branches = branches_list("heads", $ffver, $tbver);
+    foreach my $branch (sort @branches) {
+        print "$branch:\n  ";
+        my $trypush = git_notes_get('try-push', $branch);
+        if ($trypush) {
+            if ($trypush eq 'notry') {
+                print "Will not be submitted\n\n";
+            } else {
+                print "https://treeherder.mozilla.org/#/jobs?repo=try&revision=$trypush\n\n";
+            }
+        } else {
+            print "Not submitted yet\n\n";
+        }
+    }
+}
+
+sub cmd_trypush {
+    my ($ffver, $tbver) = get_versions;
+    my @branches = branches_list("heads", $ffver, $tbver);
+    foreach my $branch (sort @branches) {
+        my $trypush = git_notes_get('try-push', $branch);
+        if (!$trypush) {
+            print "$branch\n";
+        }
+    }
+}
+
+if (@ARGV && $actions{$ARGV[0]}) {
+    my $action = shift @ARGV;
+    Getopt::Long::GetOptionsFromArray(\@ARGV, \%options, 'help', @{$actions{$action}->{options}});
+    cmd_help($action) if $options{help};
+    $actions{$action}->{cmd}(@ARGV);
+} else {
+    cmd_help('tbgit');
+}

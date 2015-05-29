@@ -1,0 +1,9 @@
+tbgit try-results
+
+Display results from Mozilla Try servers
+
+  The firefox and Tor Browser versions are determined from the currently
+  checked out branch.
+
+  The results URLs are found using git notes from refs/notes/try-push.
+

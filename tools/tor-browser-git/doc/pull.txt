@@ -1,0 +1,14 @@
+tbgit pull [OPTIONS] <repository>
+
+Pull topic branches from a remote git repository
+
+  Fetch a remote git repository and update local branches for a selected
+  firefox and Tor Browser version. The firefox and Tor Browser versions
+  are determined from the currently checked out branch.
+
+options:
+
+ --yes      assume yes to all questions
+ --list     don't pull anything, but list what branches should be pulled
+ --no-fetch don't run git fetch before updating branches
+

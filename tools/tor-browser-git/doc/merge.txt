@@ -1,0 +1,17 @@
+tbgit merge [OPTIONS]
+
+Merge topic branches into the current branch
+
+    The current branch should be named after the firefox and Tor Browser
+    versions. The program will exit if the versions cannot be determined
+    from the branch name.
+
+    If the branch cannot be merged because of a conflict, the program
+    will exits so you can fix the conflict and commit.
+
+options:
+
+ --yes      assume yes to all questions
+ --list     don't merge anything, but list what needs to be merged
+ --no-edit  don't edit merge commit messages
+

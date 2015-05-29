@@ -1,0 +1,4 @@
+tbgit help [COMMAND]
+
+Display help informations about a command
+

@@ -1,0 +1,15 @@
+tbgit push [OPTIONS] <repository>
+
+Push topic branches to a remote git repository
+
+  Fetch a remote git repository, then push local branches that are not
+  up-to-date on the remote repository, for a selected firefox and Tor
+  Browser version. The firefox and Tor Browser versions are determined
+  from the currently checked out branch.
+
+options:
+
+ --yes      assume yes to all questions
+ --list     don't push anything, but list what branches should be pushed
+ --no-fetch don't run git fetch before pushing branches
+

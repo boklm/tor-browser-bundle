@@ -1,0 +1,11 @@
+tbgit <command> [args]
+
+List of commands:
+
+  help          display help informations for a command
+  pull          pull topic branches from a remote repository
+  push          push topic branches to a remote repository
+  merge         merge topic branches into a version branch
+  try-push      submit topic branches to Mozilla Try server
+  try-results   display results from Mozilla Try
+

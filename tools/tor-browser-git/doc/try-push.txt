@@ -1,0 +1,19 @@
+tbgit try-push [OPTIONS]
+
+Push topic branches to Mozilla Try server
+
+  In the future this command will push topic branches to Mozilla Try,
+  and use git-notes to store the results URL, but it is not implemented
+  yet.
+
+  Currently this command lists the branches that have not yet been
+  pushed to Mozilla Try.
+
+  The firefox and Tor Browser versions are determined from the currently
+  checked out branch.
+
+options:
+
+ --yes      assume yes to all questions
+ --list     don't submit anything, but list what branches should be submitted
+
