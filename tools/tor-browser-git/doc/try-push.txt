@@ -14,6 +14,7 @@ Push topic branches to Mozilla Try server
 
 options:
 
- --yes      assume yes to all questions
- --list     don't submit anything, but list what branches should be submitted
+ --yes          assume yes to all questions
+ --list         don't submit anything, but list what branches should be submitted
+ --max-push=<n> don't push more than n branches
 

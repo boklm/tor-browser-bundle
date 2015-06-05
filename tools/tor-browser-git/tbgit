@@ -4,12 +4,16 @@ use strict;
 use FindBin;
 use Getopt::Long;
 use IO::CaptureOutput qw(capture_exec);
-use File::Slurp qw(read_file);
+use File::Slurp qw(read_file write_file);
 use File::Basename;
 use File::Find;
+use File::Temp;
 use Cwd qw(getcwd);
 
 my $docdir = "$FindBin::Bin/doc";
+my $hgdir = "$FindBin::Bin/hg_clones";
+my $mapfile = "$FindBin::Bin/gecko-mapfile";
+my $default_trychooser = 'try: -b d -f -p linux,linux64,linux64-st-an -u reftest,crashtest,xpcshell,jsreftest,marionette,cppunit,jittests,mochitest-1,mochitest-2,mochitest-3,mochitest-4,mochitest-5,mochitest-bc -t none';
 
 my %options;
 my %actions = (
@@ -39,7 +43,7 @@ my %actions = (
     },
     'try-push' => {
         cmd => \&cmd_trypush,
-        options => [ 'list', 'yes', ],
+        options => [ 'list', 'yes', 'max-push=i', ],
     },
 );
 
@@ -84,6 +88,12 @@ sub run_noerr {
         return;
     }
     exit_error('Failed to run: ' . join(' ', @cmd)) unless system(@cmd) == 0;
+}
+
+sub run_noerr_noout {
+    my @cmd = @_;
+    my (undef, $err, $success) = capture_exec(@cmd);
+    exit_error('Failed to run: ' . join(' ', @cmd) . "\n$err") unless $success;
 }
 
 sub run_noerr_ask {
@@ -138,6 +148,25 @@ sub git_notes_get {
     return $out;
 }
 
+sub git_notes_get_option {
+    my ($ref, $object, $opt) = @_;
+    my $txt = git_notes_get($ref, $object);
+    return () unless defined $txt;
+    my @res;
+    foreach my $line (split("\n", $txt)) {
+        next unless $line =~ m/=/;
+        my ($key, $val) = split('=', $line, 2);
+        chomp $val;
+        push @res, $val if $key eq $opt;
+    }
+    return @res;
+}
+
+sub git_notes_append {
+    my ($ref, $object, $txt) = @_;
+    run_noerr_noout('git', 'notes', '--ref', $ref, 'append', '-m', $txt, $object);
+}
+
 sub git_fetch {
     my ($repo) = @_;
     return if $options{'no-fetch'};
@@ -170,6 +199,82 @@ sub branches_list {
         $b{$1} = $branch if ($branch =~ m/^$ffver\/$tbver\/([^\/]+)$/);
     }
     return sort values %b;
+}
+
+sub wget_mapfile {
+    run_noerr('wget', "-O$mapfile",
+        'https://people.mozilla.org/~pmoore/vcs2vcs/gecko-dev/gecko-mapfile');
+}
+
+sub hg_git_commits_map {
+    my @l = read_file($mapfile);
+    my %r = map { (m/^([^ ]+) ([^ ]+)/) } @l;
+    chomp %r;
+    return \%r;
+}
+
+sub git_to_hg_hash {
+    my ($git_hash) = @_;
+    wget_mapfile() unless -f $mapfile;
+    my $map = hg_git_commits_map();
+    return $map->{$git_hash} if $map->{$git_hash};
+    wget_mapfile();
+    $map = hg_git_commits_map();
+    exit_error "Could not find hg commit for $git_hash" unless $map->{$git_hash};
+    return $map->{$git_hash};
+}
+
+sub hg_clone_init {
+    my ($name) = @_;
+    my $oldcwd = getcwd;
+    mkdir $hgdir unless -d $hgdir;
+    chdir $hgdir;
+    run_noerr('hg', 'clone', '-v',
+        "https://hg.mozilla.org/releases/$name", $name) unless -d $name;
+    chdir $name;
+    run_noerr_noout('hg', 'qpop', '--all');
+    my ($unapplied) = capture_exec('hg', 'qunapplied');
+    foreach my $u (split "\n", $unapplied) {
+        chomp $u;
+        run_noerr_noout('hg', 'qdelete', $u);
+    }
+    run_noerr_noout('hg', 'pull');
+    chdir $oldcwd;
+}
+
+sub try_torbrowser_patch {
+    my ($git_branch, $git_base) = @_;
+    my ($log) = capture_exec('git', 'log', "$git_base..$git_branch");
+    my ($diff) = capture_exec('git', 'diff', "$git_base..$git_branch");
+    my $file = File::Temp->new();
+    write_file($file, "Tor Browser: $git_branch\n\n$log\n$diff");
+    return $file;
+}
+
+sub get_esr_version {
+    my ($branch) = @_;
+    return $1 if $branch =~ m/^(\d+)\.\d+\.\d+esr\//;
+    exit_error "Cannot get esr version from branch $branch";
+}
+
+sub push_to_try {
+    my ($git_branch, $git_base) = @_;
+    my $esr_version = get_esr_version($git_branch);
+    my $tbpatch = try_torbrowser_patch($git_branch, $git_base);
+    my $hg_base = git_to_hg_hash(git_hash($git_base));
+    hg_clone_init("mozilla-esr$esr_version");
+    my $oldcwd = getcwd;
+    chdir "$hgdir/mozilla-esr$esr_version";
+    run_noerr_noout('hg', 'update', '-C', $hg_base);
+    run_noerr_noout('hg', 'qimport', '-P', $tbpatch->filename, '-n',
+                    'torbrowser.patch');
+    run_noerr_noout('hg', 'qnew', '-m', $default_trychooser, 'trychooser');
+    my ($hg_id) = capture_exec('hg', 'id', '-i');
+    chomp $hg_id;
+    print "Pushing $hg_id to Try\n";
+    run_noerr(qw(hg push -r tip -f ssh://hg.mozilla.org/try/));
+    chdir $oldcwd;
+    git_notes_append('try-push', $git_branch, "pushid=$hg_id");
 }
 
 sub cmd_merge {
@@ -263,27 +368,37 @@ sub cmd_tryresults {
     my ($ffver, $tbver) = get_versions;
     my @branches = branches_list("heads", $ffver, $tbver);
     foreach my $branch (sort @branches) {
-        print "$branch:\n  ";
+        print "$branch:\n";
         my $trypush = git_notes_get('try-push', $branch);
-        if ($trypush) {
-            if ($trypush eq 'notry') {
-                print "Will not be submitted\n\n";
-            } else {
-                print "https://treeherder.mozilla.org/#/jobs?repo=try&revision=$trypush\n\n";
+        if (git_notes_get_option('try-push', $branch, 'notry')) {
+            print "  Will not be submitted\n";
+        } elsif (my @pushid = git_notes_get_option('try-push', $branch, 'pushid')) {
+            foreach my $id (@pushid) {
+                print "  https://treeherder.mozilla.org/#/jobs?repo=try&revision=$id\n";
             }
         } else {
-            print "Not submitted yet\n\n";
+            print "  Not submitted yet\n";
         }
+        print "\n";
     }
 }
 
 sub cmd_trypush {
     my ($ffver, $tbver) = get_versions;
+    my $max_push = $options{'max-push'} ? $options{'max-push'} : 1;
+    my $nb_push = 0;
     my @branches = branches_list("heads", $ffver, $tbver);
     foreach my $branch (sort @branches) {
-        my $trypush = git_notes_get('try-push', $branch);
-        if (!$trypush) {
+        next if git_notes_get_option('try-push', $branch, 'pushid');
+        next if git_notes_get_option('try-push', $branch, 'notry');
+        if ($options{list}) {
             print "$branch\n";
+            next;
+        }
+        exit 0 if $nb_push >= $max_push;
+        if ($options{yes} || ask_yn("Push $branch to try?", 'y')) {
+            push_to_try($branch, "$ffver/base");
+            $nb_push++;
         }
     }
 }
