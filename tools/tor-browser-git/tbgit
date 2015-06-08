@@ -9,6 +9,8 @@ use File::Basename;
 use File::Find;
 use File::Temp;
 use Cwd qw(getcwd);
+use LWP::Simple;
+use JSON 'decode_json';
 
 my $docdir = "$FindBin::Bin/doc";
 my $hgdir = "$FindBin::Bin/hg_clones";
@@ -39,7 +41,7 @@ my %actions = (
     },
     'try-results' => {
         cmd => \&cmd_tryresults,
-        options => [],
+        options => [ 'failed', 'success', ],
     },
     'try-push' => {
         cmd => \&cmd_trypush,
@@ -363,21 +365,94 @@ sub cmd_push {
     }
 }
 
+sub treeherder_get_result_set_id {
+    my ($hg_hash) = @_;
+    my $url = 'https://treeherder.mozilla.org/api/project/try/resultset/'
+              . "?count=10&full=true&revision=$hg_hash";
+    my $content = get($url);
+    exit_error "Cannot get $url" unless $content;
+    my $data = decode_json($content);
+    exit_error "Error getting resultset id" unless $data->{results}->[0]->{id};
+    return $data->{results}->[0]->{id};
+}
+
+sub treeherder_get_jobs {
+    my ($hg_hash) = @_;
+    my $resultset_id = treeherder_get_result_set_id($hg_hash);
+    my $url = 'https://treeherder.mozilla.org/api/project/try/jobs/?count=2000&'
+              . "result_set_id=$resultset_id&return_type=list";
+    my $content = get($url);
+    exit_error "Cannot get $url" unless $content;
+    my $data = decode_json($content);
+    my @jobs;
+    my @prop_names = @{$data->{job_property_names}};
+    foreach my $result (@{$data->{results}}) {
+        my @res = @$result;
+        my %job;
+        foreach my $prop_name (@prop_names) {
+            $job{$prop_name} = shift @res;
+        }
+        push @jobs, \%job;
+    }
+    return @jobs;
+}
+
+sub treeherder_jobs_by_status {
+    my @jobs = @_;
+    my %j;
+    foreach my $job (@jobs) {
+        next if $job->{job_group_symbol} eq 'R-e10s';
+        next if $job->{result} eq 'retry';
+        my $name;
+        my $status;
+        if ($job->{job_group_symbol} eq '?') {
+            $name = $job->{job_type_symbol};
+        } else {
+            $name = "$job->{job_group_symbol}($job->{job_type_symbol})";
+        }
+        if ($job->{state} eq 'completed') {
+            $status = $job->{result};
+        } else {
+            $status = $job->{state};
+        }
+        push @{$j{$status}}, $name;
+    }
+    return \%j;
+}
+
+sub sort_uniq {
+    my %k = map { $_ => 1 } @_;
+    return sort keys %k;
+}
+
 sub cmd_tryresults {
     cmd_help('try-results') unless @_ == 0;
     my ($ffver, $tbver) = get_versions;
     my @branches = branches_list("heads", $ffver, $tbver);
     foreach my $branch (sort @branches) {
-        print "$branch:\n";
         my $trypush = git_notes_get('try-push', $branch);
-        if (git_notes_get_option('try-push', $branch, 'notry')) {
-            print "  Will not be submitted\n";
+        if (git_notes_get_option('try-push', $branch, 'notry') && !$options{failed}) {
+            next if $options{failed};
+            next if $options{success};
+            print "$branch:\n  Will not be submitted\n";
         } elsif (my @pushid = git_notes_get_option('try-push', $branch, 'pushid')) {
-            foreach my $id (@pushid) {
-                print "  https://treeherder.mozilla.org/#/jobs?repo=try&revision=$id\n";
+            my ($id) = @pushid;
+            my $jobs = treeherder_jobs_by_status(treeherder_get_jobs($id));
+            if ($options{failed} && join('', keys %$jobs) eq 'success') {
+                next;
+            }
+            if ($options{success} && join('', keys %$jobs) ne 'success') {
+                next;
+            }
+            print "$branch:\n  https://treeherder.mozilla.org/#/jobs?repo=try&revision=$id\n";
+            foreach my $status (sort keys %$jobs) {
+                next if $status eq 'success';
+                print "  $status: ", join(', ', sort_uniq(@{$jobs->{$status}})), "\n";
             }
         } else {
-            print "  Not submitted yet\n";
+            next if $options{failed};
+            next if $options{success};
+            print "$branch:\n  Not submitted yet\n";
         }
         print "\n";
     }

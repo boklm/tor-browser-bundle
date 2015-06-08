@@ -7,3 +7,10 @@ Display results from Mozilla Try servers
 
   The results URLs are found using git notes from refs/notes/try-push.
 
+  The treeherder json api is used to fetch the results.
+
+options:
+
+ --success  only show branches with no test/build failure
+ --failed   only show branches with test/build failure
+
