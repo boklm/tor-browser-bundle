@@ -1,0 +1,7 @@
+tbgit list-branches
+
+List branches and commits for current firefox and Tor Browser versions
+
+  The firefox and Tor Browser versions are determined from the currently
+  checked out branch.
+

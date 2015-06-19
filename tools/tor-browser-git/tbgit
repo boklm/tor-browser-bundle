@@ -47,6 +47,10 @@ my %actions = (
         cmd => \&cmd_trypush,
         options => [ 'list', 'yes', 'max-push=i', ],
     },
+    'list-branches' => {
+        cmd => \&cmd_list_branches,
+        options => [],
+    },
 );
 
 sub exit_error {
@@ -475,6 +479,18 @@ sub cmd_trypush {
             push_to_try($branch, "$ffver/base");
             $nb_push++;
         }
+    }
+}
+
+sub cmd_list_branches {
+    cmd_help('list-branches') unless @_ == 0;
+    my ($ffver, $tbver) = get_versions;
+    my @branches = branches_list("heads", $ffver, $tbver);
+    foreach my $branch (sort @branches) {
+        next if $branch eq "$ffver/base";
+        print "$branch:\n";
+        system('git', 'log', '--format=  %h %s', "$ffver/base..$branch");
+        print "\n";
     }
 }
 
