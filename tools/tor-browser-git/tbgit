@@ -430,9 +430,8 @@ sub sort_uniq {
 }
 
 sub cmd_tryresults {
-    cmd_help('try-results') unless @_ == 0;
-    my ($ffver, $tbver) = get_versions;
-    my @branches = branches_list("heads", $ffver, $tbver);
+    cmd_help('try-results') unless @_ <= 1;
+    my @branches = @_ ? @_ : branches_list("heads", get_versions());
     foreach my $branch (sort @branches) {
         my $trypush = git_notes_get('try-push', $branch);
         if (git_notes_get_option('try-push', $branch, 'notry') && !$options{failed}) {

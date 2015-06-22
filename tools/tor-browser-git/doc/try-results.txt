@@ -1,9 +1,10 @@
-tbgit try-results
+tbgit try-results [branch]
 
 Display results from Mozilla Try servers
 
-  The firefox and Tor Browser versions are determined from the currently
-  checked out branch.
+  Display results for the select branch. If no branch is selected, the
+  firefox and Tor Browser versions are determined from the currently
+  checked out branch and all branches for this version are shown.
 
   The results URLs are found using git notes from refs/notes/try-push.
 
